@@ -7,12 +7,11 @@ import fitz  # PyMuPDF
 from docx import Document
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="光学工程师简历筛选系统", layout="wide")
-st.title("📄 光学工程师简历筛选系统")
+st.set_page_config(page_title="简历筛选系统", layout="wide")
+st.title("📄 简历筛选系统")
 
 # --- 2. 初始化 Session State ---
 if 'rules' not in st.session_state:
-    # 注意：这里已经把“光学设计”去掉了，如果你想加回来，可以在网页上手动加
     st.session_state.rules = [
         {'keyword': 'Zemax', 'weight': 8, 'desc': '熟练使用 Zemax/CodeV 进行仿真'},
         {'keyword': 'Python', 'weight': 5, 'desc': '具备编程开发能力'},
