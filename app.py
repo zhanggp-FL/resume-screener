@@ -1,159 +1,174 @@
+# ========== app.py ==========
 import streamlit as st
 import re
 import pandas as pd
 import tempfile
 import os
 import zipfile
+
+# 文本提取用到
 import fitz  # PyMuPDF
 from docx import Document
 
-# --- 1. 页面配置 ---
+# ---------- 页面配置 ----------
 st.set_page_config(page_title="简历筛选系统", layout="wide")
-st.title("📄 简历筛选系统")
+st.title("简历筛选系统")
 
-# --- 2. 初始化 Session State ---
-if 'rules' not in st.session_state:
-    st.session_state.rules = [
-        {'keyword': 'Zemax', 'weight': 8, 'desc': '熟练使用 Zemax/CodeV 进行仿真'},
-        {'keyword': 'Python', 'weight': 5, 'desc': '具备编程开发能力'},
-    ]
+# ---------- 规则初始化 ----------
+DEFAULT_RULES = [
+    {"keyword": "Zemax",    "weight": 8, "desc": "熟练使用 Zemax / CodeV"},
+    {"keyword": "Python",   "weight": 5, "desc": "具备 Python 编程能力"},
+    {"keyword": "光学设计", "weight": 10, "desc": "几何光学/成像光学/照明光学设计经验"},
+]
 
-# --- 3. UI 布局：左右分栏 ---
-col_setup, col_result = st.columns([1, 2])
+if "rules" not in st.session_state:
+    st.session_state.rules = list(DEFAULT_RULES)
 
-with col_setup:
-    st.header("⚙️ 自定义筛选规则")
-    
-    with st.expander("点击展开：设置评分标准", expanded=True):
-        
-        # 显示现有的规则表格
-        st.subheader("当前评分规则")
-        if st.session_state.rules:
-            rule_df_data = []
-            for i, rule in enumerate(st.session_state.rules):
-                rule_df_data.append({
-                    "序号": i + 1,
-                    "筛选关键词": rule['keyword'],
-                    "权重分": rule['weight'],
-                    "备注说明": rule['desc']
-                })
-            st.dataframe(pd.DataFrame(rule_df_data), use_container_width=True, hide_index=True)
+# ---------- 左侧：规则管理 ----------
+left, right = st.columns([1, 2])
+
+with left:
+    st.header("⚙️ 筛选规则")
+
+    with st.expander("当前规则", expanded=True):
+        rows = []
+        for i, r in enumerate(st.session_state.rules):
+            rows.append({
+                "序号": i + 1,
+                "关键词": r["keyword"],
+                "权重分": r["weight"],
+                "备注": r["desc"],
+            })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         else:
-            st.info("暂无规则，请在下方添加。")
+            st.info("暂无规则，请在下方添加")
 
-        st.markdown("---")
-        
-        # --- 新增/修改/删除逻辑 ---
-        st.subheader("✍️ 新增或修改规则")
-        
-        input_keyword = st.text_input("输入技能关键词 (如：激光雷达)", key="input_kw")
-        input_weight = st.number_input("设置权重分", min_value=1, max_value=100, value=10, step=1, key="input_w")
-        input_desc = st.text_input("备注说明 (可选)", key="input_d")
+    st.subheader("新增 / 覆盖更新规则")
 
-        # 按钮区域
-        btn_col1, btn_col2 = st.columns(2)
-        
-        with btn_col1:
-            if st.button("➕ 保存/更新规则", use_container_width=True, type="primary"):
-                if not input_keyword:
-                    st.warning("⚠️ 请输入关键词！")
-                else:
-                    # 核心逻辑：检查是否已存在
-                    existing_index = -1
-                    for i, rule in enumerate(st.session_state.rules):
-                        if rule['keyword'].lower() == input_keyword.lower():
-                            existing_index = i
-                            break
-                    
-                    if existing_index != -1:
-                        # 如果存在，先删除旧的
-                        del st.session_state.rules[existing_index]
-                        st.success(f"✅ 规则 '{input_keyword}' 已更新！")
-                    else:
-                        st.success(f"✅ 成功添加 '{input_keyword}'！")
-                    
-                    # 追加新的规则
-                    st.session_state.rules.append({
-                        "keyword": input_keyword,
-                        "weight": input_weight,
-                        "desc": input_desc
-                    })
-                    st.rerun()
+    kw = st.text_input("关键词（如 Zemax / DOE / 激光原理）", key="kw")
+    w  = st.number_input("权重分（命中该关键词加几分）", min_value=1, max_value=100, value=5, step=1, key="w")
+    dc = st.text_input("备注（可选）", key="dc")
 
-        with btn_col2:
-            if st.button("🗑️ 重置所有规则", use_container_width=True):
-                st.session_state.rules = []
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("➕ 保存规则（同名自动覆盖）", use_container_width=True, type="primary"):
+            if not kw.strip():
+                st.warning("关键词不能为空")
+            else:
+                k = kw.strip()
+                # 若同名已存在：先移除旧条目（覆盖语义）
+                st.session_state.rules = [r for r in st.session_state.rules if r["keyword"] != k]
+                st.session_state.rules.append({"keyword": k, "weight": int(w), "desc": dc})
+                st.success("已保存：" + k)
                 st.rerun()
+    with c2:
+        if st.button("🗑️ 清空所有规则", use_container_width=True):
+            st.session_state.rules = []
+            st.rerun()
 
-with col_result:
-    st.header("🚀 开始筛选")
-    
-    uploaded_zip = st.file_uploader(
-        "📦 上传简历文件夹 (请压缩为 ZIP 格式)",
+# ---------- 右侧：上传 ZIP + 筛选 ----------
+with right:
+    st.header("📂 上传简历（ZIP 压缩包）")
+    st.caption("把你的“resumes 总文件夹”右键 → 压缩成 ZIP，这里上传即可（子文件夹也会被扫描）")
+
+    up = st.file_uploader(
+        "选择 ZIP 文件",
         type=["zip"],
-        help="支持包含子文件夹的 ZIP 包。系统会自动解压并扫描所有 PDF/DOCX 文件。"
     )
 
-    # --- 4. 核心逻辑：提取文本 ---
-    def extract_text(file_path, file_name):
-        text = ""
+    # ---- 工具函数：文本提取 ----
+    def _read_pdf(path: str) -> str:
+        out = []
+        with fitz.open(path) as doc:
+            for pg in doc:
+                out.append(pg.get_text())
+        return "\n".join(out)
+
+    def _read_docx(path: str) -> str:
+        parms = []
+        d = Document(path)
+        for p in d.paragraphs:
+            if p.text:
+                parms.append(p.text)
+        return "\n".join(parms)
+
+    def extract_text_from_path(path: str) -> str:
+        t = ""
         try:
-            if file_name.endswith('.pdf'):
-                doc = fitz.open(file_path)
-                for page in doc:
-                    text += page.get_text()
-            elif file_name.endswith('.docx'):
-                doc = Document(file_path)
-                for para in doc.paragraphs:
-                    text += para.text + "\n"
-        except Exception as e:
-            st.error(f"读取文件 {file_name} 失败: {e}")
-        return text
+            if path.lower().endswith(".pdf"):
+                t = _read_pdf(path)
+            elif path.lower().endswith(".docx"):
+                t = _read_docx(path)
+        except Exception as exc:
+            # 这里一定用双引号闭合，避免 unterminated string
+            st.warning("读取失败: " + os.path.basename(path) + " (" + str(exc) + ")")
+        return t.lower()
 
-    # --- 5. 核心逻辑：计算分数 ---
-    def calc_score(text, rules):
-        total_score = 0
-        details = {}
-        
-        for rule in rules:
-            keyword = rule['keyword']
-            weight = rule['weight']
-            if re.search(r'\b' + re.escape(keyword) + r'\b', text, re.IGNORECASE):
-                total_score += weight
-                details[keyword] = weight
-            else:
-                details[keyword] = 0
-                
-        return total_score, details
+    # ---- 关键词/规则打分 ----
+    def score_it(text: str, rules: list) -> dict:
+        detail = {}
+        total = 0
+        for r in rules:
+            k = (r.get("keyword") or "").strip()
+            if not k:
+                detail["(空)"] = 0
+                continue
+            hit = 1 if re.search(re.escape(k), text, re.IGNORECASE) else 0
+            s = r["weight"] if hit else 0
+            detail[k] = s
+            total += s
+        return {"total": total, "detail": detail}
 
-    # --- 6. 触发筛选按钮 ---
-    if st.button("🎯 开始智能筛选", use_container_width=True, type="primary"):
-        if not uploaded_zip:
-            st.warning("请先上传 ZIP 文件！")
+    # ---- 开始筛选 ----
+    if st.button("🎯 开始筛选", use_container_width=True, type="primary"):
+        if not up:
+            st.warning("请先上传 ZIP 文件")
         elif not st.session_state.rules:
-            st.warning("请先在左侧添加至少一个筛选规则！")
+            st.warning("请先添加至少一条筛选规则")
         else:
-            results = []
-            # 创建临时目录
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                st.info(f"📂 正在解压 ZIP 文件到临时目录...")
-                # 解压 ZIP
-                zip_path = os.path.join(tmp_dir, "uploaded.zip")
-                with open(zip_path, "wb") as f:
-                    f.write(uploaded_zip.getvalue())
-                
-                extract_dir = os.path.join(tmp_dir, "extracted")
+            with tempfile.TemporaryDirectory() as td:
+                zip_path = os.path.join(td, "bundle.zip")
+                with open(zip_path, "wb") as fout:
+                    fout.write(up.getvalue())
+
+                extract_dir = os.path.join(td, "unzip")
                 os.makedirs(extract_dir, exist_ok=True)
-                
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_dir)
-                
-                # 递归查找所有 PDF/DOCX 文件
-                all_files = []
-                for root, dirs, files in os.walk(extract_dir):
-                    for file in files:
-                        if file.lower().endswith(('.pdf', '.docx')):
-                            all_files.append(os.path.join(root, file))
-                
-                if not all_files:
-                    st.error("
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extract_dir)
+
+                targets = []
+                for root, _, files in os.walk(extract_dir):
+                    for fn in files:
+                        if fn.lower().endswith((".pdf", ".docx")):
+                            targets.append(os.path.join(root, fn))
+
+                if not targets:
+                    st.error("ZIP 内未找到 PDF / DOCX 文件")
+                else:
+                    rows_out = []
+                    bar = st.progress(0.0, text="解析中...")
+                    for idx, fp in enumerate(targets):
+                        txt = extract_text_from_path(fp)
+                        sc = score_it(txt, st.session_state.rules)
+                        name = os.path.splitext(os.path.basename(fp))[0]
+                        rec = {"简历文件": name, "总分": sc["total"]}
+                        for r in st.session_state.rules:
+                            k = (r.get("keyword") or "").strip()
+                            rec[k] = sc["detail"].get(k, 0)
+                        rows_out.append(rec)
+                        bar.progress((idx + 1) / max(len(targets), 1), text=name)
+
+                    bar.empty()
+                    df = pd.DataFrame(rows_out).sort_values("总分", ascending=False).reset_index(drop=True)
+                    st.success("完成，共 {} 份".format(len(df)))
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+
+                    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        "⬇ 下载结果 CSV（Excel 可直接打开）",
+                        data=csv_bytes,
+                        file_name="简历筛选结果.csv",
+                        mime="text/csv",
+                    )
+# ========== end app.py ==========
