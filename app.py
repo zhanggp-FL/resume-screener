@@ -3,6 +3,7 @@ import re
 import pandas as pd
 import tempfile
 import os
+import zipfile
 import fitz  # PyMuPDF
 from docx import Document
 
@@ -87,11 +88,10 @@ with col_setup:
 with col_result:
     st.header("🚀 开始筛选")
     
-    uploaded_files = st.file_uploader(
-        "上传简历 (支持多选)", 
-        type=["pdf", "docx"], 
-        accept_multiple_files=True,
-        help="支持 PDF 和 Word 格式"
+    uploaded_zip = st.file_uploader(
+        "📦 上传简历文件夹 (请压缩为 ZIP 格式)",
+        type=["zip"],
+        help="支持包含子文件夹的 ZIP 包。系统会自动解压并扫描所有 PDF/DOCX 文件。"
     )
 
     # --- 4. 核心逻辑：提取文本 ---
@@ -118,7 +118,6 @@ with col_result:
         for rule in rules:
             keyword = rule['keyword']
             weight = rule['weight']
-            # 使用正则表达式进行不区分大小写的匹配
             if re.search(r'\b' + re.escape(keyword) + r'\b', text, re.IGNORECASE):
                 total_score += weight
                 details[keyword] = weight
@@ -129,45 +128,32 @@ with col_result:
 
     # --- 6. 触发筛选按钮 ---
     if st.button("🎯 开始智能筛选", use_container_width=True, type="primary"):
-        if not uploaded_files:
-            st.warning("请先上传简历！")
+        if not uploaded_zip:
+            st.warning("请先上传 ZIP 文件！")
         elif not st.session_state.rules:
             st.warning("请先在左侧添加至少一个筛选规则！")
         else:
             results = []
-            progress_bar = st.progress(0, text="正在解析简历...")
-            
-            for i, uf in enumerate(uploaded_files):
-                suffix = os.path.splitext(uf.name)[1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(uf.getvalue())
-                    tmp_path = tmp.name
+            # 创建临时目录
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                st.info(f"📂 正在解压 ZIP 文件到临时目录...")
+                # 解压 ZIP
+                zip_path = os.path.join(tmp_dir, "uploaded.zip")
+                with open(zip_path, "wb") as f:
+                    f.write(uploaded_zip.getvalue())
                 
-                text = extract_text(tmp_path, uf.name)
-                total, detail = calc_score(text, st.session_state.rules)
+                extract_dir = os.path.join(tmp_dir, "extracted")
+                os.makedirs(extract_dir, exist_ok=True)
                 
-                results.append({
-                    "👤 候选人": uf.name.replace('.pdf', '').replace('.docx', ''),
-                    "💯 匹配总分": total,
-                    **detail
-                })
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
                 
-                os.unlink(tmp_path)
-                progress_bar.progress((i + 1) / len(uploaded_files), text=f"正在分析: {uf.name}")
-            
-            progress_bar.empty()
-            st.success(f"筛选完成，共处理 {len(results)} 份简历")
-            
-            df = pd.DataFrame(results)
-            cols = df.columns.tolist()
-            score_cols = [c for c in cols if c not in ["👤 候选人", "💯 匹配总分"]]
-            df = df[["👤 候选人", "💯 匹配总分"] + score_cols]
-            
-            st.dataframe(
-                df.sort_values(by="💯 匹配总分", ascending=False),
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            csv = df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("⬇️ 下载筛选报告 (CSV)", csv, "简历筛选报告.csv", "text/csv")
+                # 递归查找所有 PDF/DOCX 文件
+                all_files = []
+                for root, dirs, files in os.walk(extract_dir):
+                    for file in files:
+                        if file.lower().endswith(('.pdf', '.docx')):
+                            all_files.append(os.path.join(root, file))
+                
+                if not all_files:
+                    st.error("
