@@ -1,67 +1,44 @@
-# ========== app.py (最终稳定版) ==========
+# ========== app.py (支持清除和修改默认值) ==========
 import streamlit as st
 import re
 import pandas as pd
 import tempfile
 import os
 import zipfile
+import copy
 
 import fitz
 from docx import Document
 
-# ---------- 1. 多岗位规则库 (核心数据) ----------
-JOBS_DB = {
+# ---------- 1. 初始默认规则 (只读备份，用于初始化) ----------
+INITIAL_DEFAULTS = {
     "光学设计工程师": {
-        "基本技能": [
-            {"keyword": "光学设计", "weight": 10, "desc": "几何/成像/照明设计"},
-            {"keyword": "Zemax", "weight": 8, "desc": "光学仿真软件"},
-        ],
-        "专业技能": [
-            {"keyword": "DOE", "weight": 6, "desc": "衍射光学元件"},
-            {"keyword": "杂散光", "weight": 5, "desc": "Stray Light Analysis"},
-        ],
-        "优选项": [
-            {"keyword": "Python", "weight": 4, "desc": "二次开发或自动化"},
-            {"keyword": "Matlab", "weight": 3, "desc": "算法验证"},
-        ]
+        "基本技能": [{"keyword": "光学设计", "weight": 10, "desc": "几何/成像"}, {"keyword": "Zemax", "weight": 8, "desc": "软件"}],
+        "专业技能": [{"keyword": "DOE", "weight": 6, "desc": "衍射"}, {"keyword": "杂散光", "weight": 5, "desc": "分析"}],
+        "优选项": [{"keyword": "Python", "weight": 4, "desc": "自动化"}, {"keyword": "Matlab", "weight": 3, "desc": "算法"}]
     },
     "机械结构设计工程师": {
-        "基本技能": [
-            {"keyword": "SolidWorks", "weight": 10, "desc": "3D建模软件"},
-            {"keyword": "工程图", "weight": 8, "desc": "出图能力"},
-        ],
-        "专业技能": [
-            {"keyword": "公差分析", "weight": 7, "desc": "GD&T"},
-            {"keyword": "热设计", "weight": 5, "desc": "散热结构"},
-        ],
-        "优选项": [
-            {"keyword": "ANSYS", "weight": 4, "desc": "有限元分析"},
-            {"keyword": "项目管理", "weight": 3, "desc": "跨部门协作"},
-        ]
+        "基本技能": [{"keyword": "SolidWorks", "weight": 10, "desc": "建模"}, {"keyword": "工程图", "weight": 8, "desc": "出图"}],
+        "专业技能": [{"keyword": "公差分析", "weight": 7, "desc": "GD&T"}, {"keyword": "热设计", "weight": 5, "desc": "散热"}],
+        "优选项": [{"keyword": "ANSYS", "weight": 4, "desc": "有限元"}, {"keyword": "项目管理", "weight": 3, "desc": "协作"}]
     },
     "CAE工程师": {
-        "基本技能": [
-            {"keyword": "Hypermesh", "weight": 10, "desc": "前处理网格划分"},
-            {"keyword": "Abaqus", "weight": 8, "desc": "非线性求解"},
-        ],
-        "专业技能": [
-            {"keyword": "模态分析", "weight": 7, "desc": "动力学仿真"},
-            {"keyword": "疲劳分析", "weight": 6, "desc": "寿命预测"},
-        ],
-        "优选项": [
-            {"keyword": "Python", "weight": 5, "desc": "二次开发"},
-            {"keyword": "二次开发", "weight": 4, "desc": "脚本编写"},
-        ]
+        "基本技能": [{"keyword": "Hypermesh", "weight": 10, "desc": "前处理"}, {"keyword": "Abaqus", "weight": 8, "desc": "求解"}],
+        "专业技能": [{"keyword": "模态分析", "weight": 7, "desc": "动力学"}, {"keyword": "疲劳分析", "weight": 6, "desc": "寿命"}],
+        "优选项": [{"keyword": "Python", "weight": 5, "desc": "二次开发"}, {"keyword": "二次开发", "weight": 4, "desc": "脚本"}]
     }
 }
 
-# ---------- 2. Session State 初始化 (防崩溃核心) ----------
+# ---------- 2. Session State 初始化 (核心改动) ----------
+# 使用一个可变的字典来存储“当前生效的默认值”
+if "DEFAULT_JOBS_DB" not in st.session_state:
+    st.session_state.DEFAULT_JOBS_DB = copy.deepcopy(INITIAL_DEFAULTS)
+
 if "current_job" not in st.session_state:
-    st.session_state.current_job = list(JOBS_DB.keys())[0]  # 默认选第一个
+    st.session_state.current_job = list(st.session_state.DEFAULT_JOBS_DB.keys())[0]
 
 if "rules" not in st.session_state:
-    # 确保 rules 初始化为一个有效的字典，而不是空列表
-    st.session_state.rules = JOBS_DB[st.session_state.current_job]
+    st.session_state.rules = copy.deepcopy(st.session_state.DEFAULT_JOBS_DB[st.session_state.current_job])
 
 # ---------- 3. 页面配置 ----------
 st.set_page_config(page_title="多岗位简历筛选系统", layout="wide")
@@ -73,32 +50,26 @@ left, right = st.columns([1, 2])
 with left:
     st.header("⚙️ 岗位与规则配置")
     
-    # --- 岗位选择器 (修复后的逻辑) ---
-    job_options = list(JOBS_DB.keys())
-    current_idx = job_options.index(st.session_state.get("current_job", job_options[0]))
+    # --- 岗位选择器 ---
+    job_options = list(st.session_state.DEFAULT_JOBS_DB.keys())
+    current_idx = job_options.index(st.session_state.current_job)
     
-    selected_job = st.selectbox(
-        "选择招聘岗位",
-        options=job_options,
-        index=current_idx
-    )
+    selected_job = st.selectbox("选择招聘岗位", options=job_options, index=current_idx)
     
-    # 只有当下拉框的值和 session_state 不一致时才更新，防止无限 rerun
     if selected_job != st.session_state.current_job:
         st.session_state.current_job = selected_job
-        st.session_state.rules = JOBS_DB[selected_job]
+        st.session_state.rules = copy.deepcopy(st.session_state.DEFAULT_JOBS_DB[selected_job])
         st.rerun()
     
     st.caption(f"当前加载: {st.session_state.current_job} 的配置")
 
     st.divider()
 
-    # --- 规则展示 (安全读取) ---
+    # --- 规则展示 ---
     with st.expander("当前规则明细", expanded=True):
-        # 使用 .get() 方法安全获取 rules，如果不存在则返回空字典
         rules_data = st.session_state.get("rules", {})
         if not rules_data:
-            st.info("暂无规则，请选择岗位或添加规则。")
+            st.info("暂无规则")
         else:
             for category, rules_list in rules_data.items():
                 st.markdown(f"**{category}**")
@@ -122,20 +93,35 @@ with left:
         
         if st.form_submit_button("添加", use_container_width=True):
             if new_kw:
-                # 确保 rules 是字典且包含该分类
                 if new_cat not in st.session_state.rules:
                     st.session_state.rules[new_cat] = []
-                
-                st.session_state.rules[new_cat].append({
-                    "keyword": new_kw,
-                    "weight": new_w,
-                    "desc": new_desc
-                })
+                st.session_state.rules[new_cat].append({"keyword": new_kw, "weight": new_w, "desc": new_desc})
                 st.rerun()
+
+    st.divider()
+
+    # --- 重置与修改默认 (核心功能) ---
+    st.subheader("🔄 重置与默认设置")
+    
+    col_reset, col_update = st.columns(2)
+    
+    with col_reset:
+        if st.button("🗑️ 清除所有技能", use_container_width=True, type="secondary"):
+            # 彻底清空当前岗位的规则
+            st.session_state.rules = {"基本技能": [], "专业技能": [], "优选项": []}
+            st.success("已清除所有技能！")
+            st.rerun()
+    
+    with col_update:
+        if st.button("💾 设为默认值", use_container_width=True, type="primary"):
+            # 将当前修改过的规则保存为新的默认值
+            st.session_state.DEFAULT_JOBS_DB[st.session_state.current_job] = copy.deepcopy(st.session_state.rules)
+            st.success(f"已更新 {st.session_state.current_job} 的默认配置！")
+            st.rerun()
 
 # ---------- 5. 右侧：上传与筛选 ----------
 with right:
-    st.header(f"📂 {st.session_state.get('current_job', '未知岗位')} - 简历筛选")
+    st.header(f"📂 {st.session_state.current_job} - 简历筛选")
     st.caption("支持包含子文件夹的 ZIP 包，自动识别 PDF/DOCX")
     
     up = st.file_uploader("选择 ZIP 文件", type=["zip"])
@@ -147,10 +133,9 @@ with right:
                 with fitz.open(path) as doc:
                     return "\n".join([pg.get_text() for pg in doc]).lower()
             elif path.lower().endswith(".docx"):
-                doc = Document(path)
-                return "\n".join([p.text for p in doc.paragraphs]).lower()
+                return "\n".join([p.text for p in Document(path).paragraphs]).lower()
         except Exception as e:
-            st.warning(f"读取失败: {os.path.basename(path)} ({e})")
+            st.warning(f"读取失败: {e}")
         return ""
 
     def score_it(text, rules_dict):
@@ -173,7 +158,7 @@ with right:
     if st.button("🎯 开始智能筛选", use_container_width=True, type="primary"):
         if not up:
             st.warning("请上传 ZIP 文件")
-        elif not st.session_state.get("rules"):
+        elif not any(st.session_state.rules.values()):
             st.warning("请先配置筛选规则")
         else:
             with tempfile.TemporaryDirectory() as td:
@@ -184,7 +169,6 @@ with right:
                 extract_dir = os.path.join(td, "unzip")
                 os.makedirs(extract_dir, exist_ok=True)
                 
-                # 修复中文乱码
                 with zipfile.ZipFile(zip_path, 'r') as zf:
                     for info in zf.infolist():
                         info.filename = info.filename.encode('cp437').decode('gbk')
@@ -207,7 +191,6 @@ with right:
                         sc = score_it(txt, st.session_state.rules)
                         rec = {"简历文件": name, "总分": sc["total"]}
                         
-                        # 扁平化处理
                         for cat in st.session_state.rules.values():
                             for r in cat:
                                 rec[r.get("keyword", "")] = sc["detail"].get(r.get("keyword", ""), 0)
