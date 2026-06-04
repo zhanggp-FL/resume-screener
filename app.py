@@ -1,4 +1,4 @@
-# ========== app.py (修复乱码版) ==========
+# ========== app.py (多岗位专业版) ==========
 import streamlit as st
 import re
 import pandas as pd
@@ -9,103 +9,139 @@ import zipfile
 import fitz
 from docx import Document
 
-st.set_page_config(page_title="简历筛选系统", layout="wide")
-st.title("简历筛选系统")
+st.set_page_config(page_title="多岗位简历筛选系统", layout="wide")
+st.title("📄 多岗位简历智能筛选系统")
 
-# ---------- 规则初始化 ----------
-DEFAULT_RULES = [
-    {"keyword": "Zemax", "weight": 8, "desc": "熟练使用 Zemax / CodeV"},
-    {"keyword": "Python", "weight": 5, "desc": "具备 Python 编程能力"},
-    {"keyword": "光学设计", "weight": 10, "desc": "几何光学/成像光学/照明光学设计经验"},
-]
+# ---------- 1. 多岗位规则库 (核心数据) ----------
+JOB_PROFILES = {
+    "光学设计工程师": {
+        "基本技能": [
+            {"keyword": "光学设计", "weight": 10, "desc": "几何/成像/照明设计"},
+            {"keyword": "Zemax", "weight": 8, "desc": "光学仿真软件"},
+        ],
+        "专业技能": [
+            {"keyword": "DOE", "weight": 6, "desc": "衍射光学元件"},
+            {"keyword": "杂散光", "weight": 5, "desc": "Stray Light Analysis"},
+        ],
+        "优选项": [
+            {"keyword": "Python", "weight": 4, "desc": "二次开发或自动化"},
+            {"keyword": "Matlab", "weight": 3, "desc": "算法验证"},
+        ]
+    },
+    "机械结构设计工程师": {
+        "基本技能": [
+            {"keyword": "SolidWorks", "weight": 10, "desc": "3D建模软件"},
+            {"keyword": "工程图", "weight": 8, "desc": "出图能力"},
+        ],
+        "专业技能": [
+            {"keyword": "公差分析", "weight": 7, "desc": "GD&T"},
+            {"keyword": "热设计", "weight": 5, "desc": "散热结构"},
+        ],
+        "优选项": [
+            {"keyword": "ANSYS", "weight": 4, "desc": "有限元分析"},
+            {"keyword": "项目管理", "weight": 3, "desc": "跨部门协作"},
+        ]
+    },
+    "CAE工程师": {
+        "基本技能": [
+            {"keyword": "Hypermesh", "weight": 10, "desc": "前处理网格划分"},
+            {"keyword": "Abaqus", "weight": 8, "desc": "非线性求解"},
+        ],
+        "专业技能": [
+            {"keyword": "模态分析", "weight": 7, "desc": "动力学仿真"},
+            {"keyword": "疲劳分析", "weight": 6, "desc": "寿命预测"},
+        ],
+        "优选项": [
+            {"keyword": "Python", "weight": 5, "desc": "二次开发"},
+            {"keyword": "二次开发", "weight": 4, "desc": "脚本编写"},
+        ]
+    }
+}
 
+# ---------- 2. 初始化 Session State ----------
+if "current_job" not in st.session_state:
+    st.session_state.current_job = "光学设计工程师"
 if "rules" not in st.session_state:
-    st.session_state.rules = list(DEFAULT_RULES)
+    st.session_state.rules = JOB_PROFILES[st.session_state.current_job]
 
-# ---------- 左侧：规则管理 ----------
+# ---------- 3. 左侧：岗位切换与规则管理 ----------
 left, right = st.columns([1, 2])
 
 with left:
-    st.header("⚙️ 筛选规则")
-    with st.expander("当前规则", expanded=True):
-        rows = []
-        for i, r in enumerate(st.session_state.rules):
-            rows.append({"序号": i+1, "关键词": r["keyword"], "权重分": r["weight"], "备注": r["desc"]})
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        else:
-            st.info("暂无规则")
+    st.header("⚙️ 岗位与规则配置")
+    
+    # --- 岗位选择器 ---
+    selected_job = st.selectbox(
+        "选择招聘岗位",
+        options=list(JOB_PROFILES.keys()),
+        index=list(JOB_PROFILES.keys()).index(st.session_state.current_job)
+    )
+    
+    if selected_job != st.session_state.current_job:
+        st.session_state.current_job = selected_job
+        st.session_state.rules = JOB_PROFILES[selected_job]
+        st.rerun()
+    
+    st.caption(f"当前加载: {selected_job} 的配置")
 
-    st.subheader("新增 / 覆盖更新规则")
-    kw = st.text_input("关键词", key="kw")
-    w = st.number_input("权重分", 1, 100, 5, key="w")
-    dc = st.text_input("备注", key="dc")
+    # --- 规则展示 (按分类) ---
+    with st.expander("当前规则明细", expanded=True):
+        for category, rules in st.session_state.rules.items():
+            st.markdown(f"**{category}**")
+            for r in rules:
+                col1, col2 = st.columns([0.7, 0.3])
+                col1.caption(f"{r['keyword']} (+{r['weight']})")
+                col2.caption(f"{r['desc']}")
+            st.divider()
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("➕ 保存规则", use_container_width=True, type="primary"):
-            if not kw.strip():
-                st.warning("关键词不能为空")
-            else:
-                k = kw.strip()
-                st.session_state.rules = [r for r in st.session_state.rules if r["keyword"] != k]
-                st.session_state.rules.append({"keyword": k, "weight": int(w), "desc": dc})
+    st.subheader("➕ 新增规则")
+    with st.form("add_rule"):
+        new_cat = st.selectbox("所属分类", ["基本技能", "专业技能", "优选项"])
+        new_kw = st.text_input("关键词")
+        new_w = st.number_input("权重分", 1, 100, 5)
+        new_desc = st.text_input("备注")
+        if st.form_submit_button("添加", use_container_width=True):
+            if new_kw:
+                st.session_state.rules[new_cat].append({
+                    "keyword": new_kw,
+                    "weight": new_w,
+                    "desc": new_desc
+                })
                 st.rerun()
-    with c2:
-        if st.button("🗑️ 清空规则", use_container_width=True):
-            st.session_state.rules = []
-            st.rerun()
 
-# ---------- 右侧：上传与筛选 ----------
+# ---------- 4. 右侧：上传与筛选 ----------
 with right:
-    st.header("📂 上传简历（ZIP 压缩包）")
-    up = st.file_uploader("选择 ZIP 文件", type=["zip"])
+    st.header(f"📂 {st.session_state.current_job} - 简历筛选")
+    up = st.file_uploader("上传简历 ZIP 包", type=["zip"])
 
-    # ---------- 修复点：文件名解码函数 ----------
-    def decode_filename(filename_bytes):
-        """
-        尝试用多种编码解码文件名，解决中文乱码问题
-        """
-        encodings_to_try = ['utf-8', 'gbk', 'cp936', 'big5']
-        for enc in encodings_to_try:
-            try:
-                return filename_bytes.decode(enc)
-            except UnicodeDecodeError:
-                continue
-        # 如果都失败了，强行替换乱码字符
-        return filename_bytes.decode('utf-8', errors='replace')
-
-    # ---------- 文本提取 ----------
+    # ---------- 工具函数 ----------
     def extract_text(path):
         try:
             if path.lower().endswith(".pdf"):
                 with fitz.open(path) as doc:
                     return "\n".join([pg.get_text() for pg in doc]).lower()
             elif path.lower().endswith(".docx"):
-                doc = Document(path)
-                return "\n".join([p.text for p in doc.paragraphs]).lower()
+                return "\n".join([p.text for p in Document(path).paragraphs]).lower()
         except Exception as e:
-            st.warning(f"读取失败: {os.path.basename(path)} ({e})")
+            st.warning(f"读取失败: {e}")
         return ""
 
-    # ---------- 打分 ----------
-    def score_it(text, rules):
-        detail = {}
+    def score_it(text, rules_dict):
         total = 0
-        for r in rules:
-            k = r["keyword"]
-            hit = bool(re.search(re.escape(k), text, re.IGNORECASE))
-            s = r["weight"] if hit else 0
-            detail[k] = s
-            total += s
+        detail = {}
+        for cat, rules in rules_dict.items():
+            for r in rules:
+                k = r["keyword"]
+                hit = bool(re.search(re.escape(k), text, re.IGNORECASE))
+                s = r["weight"] if hit else 0
+                detail[k] = s
+                total += s
         return {"total": total, "detail": detail}
 
-    # ---------- 开始筛选 ----------
+    # ---------- 筛选逻辑 ----------
     if st.button("🎯 开始筛选", use_container_width=True, type="primary"):
         if not up:
             st.warning("请上传 ZIP")
-        elif not st.session_state.rules:
-            st.warning("请添加规则")
         else:
             with tempfile.TemporaryDirectory() as td:
                 zip_path = os.path.join(td, "bundle.zip")
@@ -115,12 +151,9 @@ with right:
                 extract_dir = os.path.join(td, "unzip")
                 os.makedirs(extract_dir, exist_ok=True)
                 
-                # ---------- 修复点：使用自定义解压逻辑 ----------
                 with zipfile.ZipFile(zip_path, 'r') as zf:
                     for info in zf.infolist():
-                        # 这里是关键：解码文件名
-                        real_filename = decode_filename(info.filename.encode('cp437'))
-                        info.filename = real_filename
+                        info.filename = info.filename.encode('cp437').decode('gbk')
                         zf.extract(info, extract_dir)
 
                 targets = []
@@ -130,7 +163,7 @@ with right:
                             targets.append(os.path.join(root, fn))
 
                 if not targets:
-                    st.error("ZIP 内未找到 PDF/DOCX")
+                    st.error("未找到文件")
                 else:
                     rows = []
                     bar = st.progress(0.0, "解析中...")
@@ -139,16 +172,23 @@ with right:
                         txt = extract_text(fp)
                         sc = score_it(txt, st.session_state.rules)
                         rec = {"简历文件": name, "总分": sc["total"]}
-                        for r in st.session_state.rules:
-                            rec[r["keyword"]] = sc["detail"].get(r["keyword"], 0)
+                        # 扁平化处理规则用于表格显示
+                        for cat in st.session_state.rules.values():
+                            for r in cat:
+                                rec[r["keyword"]] = sc["detail"].get(r["keyword"], 0)
                         rows.append(rec)
                         bar.progress((i+1)/len(targets), name)
                     
                     bar.empty()
                     df = pd.DataFrame(rows).sort_values("总分", ascending=False).reset_index(drop=True)
                     st.success(f"完成，共 {len(df)} 份")
+                    
+                    # 显示统计
+                    st.subheader("📊 分数分布")
+                    st.bar_chart(df.set_index("简历文件")["总分"].head(10))
+                    
                     st.dataframe(df, use_container_width=True, hide_index=True)
-
+                    
                     csv = df.to_csv(index=False).encode("utf-8-sig")
-                    st.download_button("⬇ 下载结果", csv, "简历筛选结果.csv", "text/csv")
+                    st.download_button("⬇ 下载结果", csv, "筛选结果.csv", "text/csv")
 # ========== end ==========
