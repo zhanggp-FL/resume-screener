@@ -1,4 +1,4 @@
-# ========== app.py (支持清除和修改默认值) ==========
+# ========== app.py (支持文件下载链接) ==========
 import streamlit as st
 import re
 import pandas as pd
@@ -6,11 +6,12 @@ import tempfile
 import os
 import zipfile
 import copy
+import base64
 
 import fitz
 from docx import Document
 
-# ---------- 1. 初始默认规则 (只读备份，用于初始化) ----------
+# ---------- 1. 初始默认规则 ----------
 INITIAL_DEFAULTS = {
     "光学设计工程师": {
         "基本技能": [{"keyword": "光学设计", "weight": 10, "desc": "几何/成像"}, {"keyword": "Zemax", "weight": 8, "desc": "软件"}],
@@ -29,8 +30,7 @@ INITIAL_DEFAULTS = {
     }
 }
 
-# ---------- 2. Session State 初始化 (核心改动) ----------
-# 使用一个可变的字典来存储“当前生效的默认值”
+# ---------- 2. Session State 初始化 ----------
 if "DEFAULT_JOBS_DB" not in st.session_state:
     st.session_state.DEFAULT_JOBS_DB = copy.deepcopy(INITIAL_DEFAULTS)
 
@@ -50,7 +50,6 @@ left, right = st.columns([1, 2])
 with left:
     st.header("⚙️ 岗位与规则配置")
     
-    # --- 岗位选择器 ---
     job_options = list(st.session_state.DEFAULT_JOBS_DB.keys())
     current_idx = job_options.index(st.session_state.current_job)
     
@@ -65,7 +64,6 @@ with left:
 
     st.divider()
 
-    # --- 规则展示 ---
     with st.expander("当前规则明细", expanded=True):
         rules_data = st.session_state.get("rules", {})
         if not rules_data:
@@ -83,7 +81,6 @@ with left:
 
     st.divider()
 
-    # --- 新增规则表单 ---
     st.subheader("➕ 新增规则")
     with st.form("add_rule_form"):
         new_cat = st.selectbox("所属分类", ["基本技能", "专业技能", "优选项"])
@@ -95,26 +92,26 @@ with left:
             if new_kw:
                 if new_cat not in st.session_state.rules:
                     st.session_state.rules[new_cat] = []
-                st.session_state.rules[new_cat].append({"keyword": new_kw, "weight": new_w, "desc": new_desc})
+                st.session_state.rules[new_cat].append({
+                    "keyword": new_kw,
+                    "weight": new_w,
+                    "desc": new_desc
+                })
                 st.rerun()
 
     st.divider()
 
-    # --- 重置与修改默认 (核心功能) ---
     st.subheader("🔄 重置与默认设置")
-    
     col_reset, col_update = st.columns(2)
     
     with col_reset:
         if st.button("🗑️ 清除所有技能", use_container_width=True, type="secondary"):
-            # 彻底清空当前岗位的规则
             st.session_state.rules = {"基本技能": [], "专业技能": [], "优选项": []}
             st.success("已清除所有技能！")
             st.rerun()
     
     with col_update:
         if st.button("💾 设为默认值", use_container_width=True, type="primary"):
-            # 将当前修改过的规则保存为新的默认值
             st.session_state.DEFAULT_JOBS_DB[st.session_state.current_job] = copy.deepcopy(st.session_state.rules)
             st.success(f"已更新 {st.session_state.current_job} 的默认配置！")
             st.rerun()
@@ -169,28 +166,51 @@ with right:
                 extract_dir = os.path.join(td, "unzip")
                 os.makedirs(extract_dir, exist_ok=True)
                 
+                # 修复中文乱码
                 with zipfile.ZipFile(zip_path, 'r') as zf:
                     for info in zf.infolist():
                         info.filename = info.filename.encode('cp437').decode('gbk')
                         zf.extract(info, extract_dir)
 
                 targets = []
+                file_contents = {}  # 存储文件内容和路径
                 for root, _, files in os.walk(extract_dir):
                     for fn in files:
                         if fn.lower().endswith((".pdf", ".docx")):
-                            targets.append(os.path.join(root, fn))
+                            full_path = os.path.join(root, fn)
+                            targets.append(full_path)
+                            file_contents[fn] = full_path  # 记录文件名和路径
 
                 if not targets:
                     st.error("ZIP 内未找到 PDF/DOCX 文件")
                 else:
                     rows = []
                     bar = st.progress(0.0, "解析中...")
+                    
                     for i, fp in enumerate(targets):
                         name = os.path.splitext(os.path.basename(fp))[0]
                         txt = extract_text(fp)
                         sc = score_it(txt, st.session_state.rules)
-                        rec = {"简历文件": name, "总分": sc["total"]}
                         
+                        # 创建文件下载链接
+                        with open(fp, "rb") as file:
+                            file_bytes = file.read()
+                        
+                        # 根据文件类型确定 MIME 类型
+                        mime_type = "application/pdf" if fp.lower().endswith(".pdf") else \
+                                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        
+                        # 生成下载链接
+                        b64 = base64.b64encode(file_bytes).decode()
+                        href = f'<a href="data:{mime_type};base64,{b64}" download="{os.path.basename(fp)}" target="_blank">📥 下载简历</a>'
+                        
+                        rec = {
+                            "简历文件": name,
+                            "总分": sc["total"],
+                            "文件链接": href  # 添加下载链接列
+                        }
+                        
+                        # 扁平化处理规则用于表格显示
                         for cat in st.session_state.rules.values():
                             for r in cat:
                                 rec[r.get("keyword", "")] = sc["detail"].get(r.get("keyword", ""), 0)
@@ -205,8 +225,52 @@ with right:
                     st.subheader("📊 Top 10 分数分布")
                     st.bar_chart(df.head(10).set_index("简历文件")["总分"])
                     
-                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    # 显示带链接的表格
+                    st.subheader("📋 筛选结果")
                     
-                    csv = df.to_csv(index=False).encode("utf-8-sig")
-                    st.download_button("⬇ 下载完整结果 CSV", csv, "简历筛选结果.csv", "text/csv")
+                    # 使用 HTML 显示表格，以支持超链接
+                    html_table = df.to_html(escape=False, index=False)
+                    st.markdown(html_table, unsafe_allow_html=True)
+                    
+                    # 下载 CSV（不带链接，因为 CSV 不支持 HTML）
+                    csv = df.drop(columns=["文件链接"]).to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        "⬇ 下载结果 CSV（不含链接）",
+                        data=csv,
+                        file_name="简历筛选结果.csv",
+                        mime="text/csv"
+                    )
+                    
+                    # 下载 Excel（带链接）
+                    @st.cache_data
+                    def convert_df_to_excel(df):
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                            df.to_excel(writer, index=False, sheet_name='Sheet1')
+                            
+                            # 获取 workbook 和 worksheet
+                            workbook = writer.book
+                            worksheet = writer.sheets['Sheet1']
+                            
+                            # 添加超链接格式
+                            link_format = workbook.add_format({'font_color': 'blue', 'underline': 1})
+                            
+                            # 找到"文件链接"列的索引
+                            col_idx = df.columns.get_loc("文件链接")
+                            
+                            # 为"文件链接"列添加超链接格式
+                            for row_num in range(1, len(df) + 1):
+                                cell_value = df.iloc[row_num-1]["文件链接"]
+                                if pd.notna(cell_value):
+                                    worksheet.write_url(row_num, col_idx, cell_value, link_format, "下载简历")
+                        
+                        return output.getvalue()
+                    
+                    excel_data = convert_df_to_excel(df)
+                    st.download_button(
+                        "⬇ 下载结果 Excel（含链接）",
+                        data=excel_data,
+                        file_name="简历筛选结果.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
 # ========== end ==========
