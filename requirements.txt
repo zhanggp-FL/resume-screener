@@ -1,6 +1,6 @@
-streamlit
-pandas
-PyMuPDF
-python-docx
-openpyxl
-xlsxwriter
+streamlit>=1.28.0
+pandas>=2.0.0
+PyMuPDF>=1.23.0
+python-docx>=0.8.11
+py7zr>=0.20.0
+openpyxl>=3.1.0
